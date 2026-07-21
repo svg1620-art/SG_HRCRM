@@ -1,0 +1,31 @@
+.sync-button {
+  padding: 7px 9px;
+  border-radius: 5px;
+}
+
+.sync-button:hover { background: #e9ece9; }
+.sync-button:disabled { cursor: wait; }
+
+.connect-hh {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 9px;
+  border-radius: 5px;
+  color: #934331;
+  background: #f5e5e1;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.connect-hh span {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #cf5f49;
+}
+
+.connect-hh:disabled {
+  opacity: .6;
+  cursor: wait;
+}
