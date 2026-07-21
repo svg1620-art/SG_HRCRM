@@ -9,12 +9,12 @@ pnpm install
 pnpm dev
 ```
 
-Скопируйте `.env.example` в `.env` и добавьте ключи hh.ru, OpenAI и PostgreSQL. Пока ключей нет, интерфейс работает с демонстрационными данными.
+Скопируйте `.env.example` в `.env` и добавьте ключи hh.ru, OpenAI и PostgreSQL. Production-домен приложения: https://hrcrm.serviceguru.pro. Пока ключей нет, интерфейс работает с демонстрационными данными.
 
 ## Интеграция hh.ru
 
 1. Зарегистрируйте приложение на https://dev.hh.ru.
-2. Укажите callback URL из `HH_REDIRECT_URI`.
+2. Укажите callback URL `https://hrcrm.serviceguru.pro/api/hh/callback`.
 3. Авторизуйте менеджера работодателя по OAuth.
 4. Синхронизируйте коллекции входящих откликов по каждой активной вакансии.
 
