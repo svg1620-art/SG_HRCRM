@@ -3,6 +3,7 @@ import { pool } from './database.mjs';
 
 const userAgent = process.env.HH_USER_AGENT || 'SG-HRCRM/0.1 (serg@serviceguru.ru)';
 const key = process.env.APP_ENCRYPTION_KEY ? createHash('sha256').update(process.env.APP_ENCRYPTION_KEY).digest() : null;
+const env = name => process.env[name]?.trim();
 
 function encrypt(value) {
   if (!key) throw new Error('APP_ENCRYPTION_KEY is not configured');
@@ -31,11 +32,11 @@ async function hhFetch(url, token, options = {}) {
 
 export async function createAuthorizationUrl() {
   if (!pool) throw new Error('DATABASE_URL is not configured');
-  if (!process.env.HH_CLIENT_ID || !process.env.HH_REDIRECT_URI || !key) throw new Error('hh.ru OAuth environment is incomplete');
+  if (!env('HH_CLIENT_ID') || !env('HH_REDIRECT_URI') || !key) throw new Error('hh.ru OAuth environment is incomplete');
   const state = randomBytes(24).toString('base64url');
   await pool.query('DELETE FROM oauth_states WHERE expires_at < NOW()');
   await pool.query('INSERT INTO oauth_states(state, provider, expires_at) VALUES ($1, $2, NOW() + INTERVAL \'10 minutes\')', [state, 'hh']);
-  const params = new URLSearchParams({ response_type: 'code', client_id: process.env.HH_CLIENT_ID, redirect_uri: process.env.HH_REDIRECT_URI, state });
+  const params = new URLSearchParams({ response_type: 'code', client_id: env('HH_CLIENT_ID'), redirect_uri: env('HH_REDIRECT_URI'), state });
   return `https://hh.ru/oauth/authorize?${params}`;
 }
 
@@ -43,7 +44,7 @@ export async function completeAuthorization(code, state) {
   if (!pool) throw new Error('DATABASE_URL is not configured');
   const valid = await pool.query('DELETE FROM oauth_states WHERE state=$1 AND provider=$2 AND expires_at > NOW() RETURNING state', [state, 'hh']);
   if (!valid.rowCount) throw new Error('OAuth state is invalid or expired');
-  const body = new URLSearchParams({ grant_type: 'authorization_code', client_id: process.env.HH_CLIENT_ID, client_secret: process.env.HH_CLIENT_SECRET, code, redirect_uri: process.env.HH_REDIRECT_URI });
+  const body = new URLSearchParams({ grant_type: 'authorization_code', client_id: env('HH_CLIENT_ID'), client_secret: env('HH_CLIENT_SECRET'), code, redirect_uri: env('HH_REDIRECT_URI') });
   const tokenResponse = await fetch('https://api.hh.ru/token', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'HH-User-Agent': userAgent }, body });
   if (!tokenResponse.ok) throw new Error(`hh.ru token ${tokenResponse.status}: ${await tokenResponse.text()}`);
   const tokens = await tokenResponse.json();
