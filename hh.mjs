@@ -49,6 +49,9 @@ export async function completeAuthorization(code, state) {
   if (!tokenResponse.ok) throw new Error(`hh.ru token ${tokenResponse.status}: ${await tokenResponse.text()}`);
   const tokens = await tokenResponse.json();
   const me = await hhFetch('https://api.hh.ru/me', tokens.access_token);
+  if (!me.employer?.id || (!me.is_employer && !me.is_hiring_manager)) {
+    throw new Error('Войдите в hh.ru под аккаунтом менеджера работодателя, а не соискателя');
+  }
   await pool.query(`INSERT INTO integrations(provider, access_token, refresh_token, expires_at, external_user_id, employer_id, metadata, updated_at)
     VALUES ('hh',$1,$2,NOW()+($3 || ' seconds')::interval,$4,$5,$6,NOW())
     ON CONFLICT(provider) DO UPDATE SET access_token=$1,refresh_token=$2,expires_at=NOW()+($3 || ' seconds')::interval,external_user_id=$4,employer_id=$5,metadata=$6,updated_at=NOW()`,
@@ -60,7 +63,9 @@ export async function integrationStatus() {
   if (!pool) return { connected: false, reason: 'database' };
   const result = await pool.query("SELECT employer_id, metadata, updated_at FROM integrations WHERE provider='hh'");
   if (!result.rowCount) return { connected: false };
-  return { connected: true, employerId: result.rows[0].employer_id, manager: result.rows[0].metadata, updatedAt: result.rows[0].updated_at };
+  const row = result.rows[0];
+  const employerAccount = Boolean(row.employer_id && (row.metadata?.is_employer || row.metadata?.is_hiring_manager));
+  return { connected: employerAccount, reason: employerAccount ? undefined : 'applicant_account', employerId: row.employer_id, manager: row.metadata, updatedAt: row.updated_at };
 }
 
 export async function syncIncoming() {
@@ -69,6 +74,7 @@ export async function syncIncoming() {
   if (!integration.rowCount) throw new Error('hh.ru is not connected');
   const token = decrypt(integration.rows[0].access_token);
   const employerId = integration.rows[0].employer_id;
+  if (!employerId) throw new Error('Подключён аккаунт соискателя. Переподключите hh.ru под менеджером работодателя');
   const vacancies = await hhFetch(`https://api.hh.ru/employers/${employerId}/vacancies/active?per_page=100`, token);
   let candidateCount = 0;
   for (const vacancy of vacancies.items || []) {
