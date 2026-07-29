@@ -24,6 +24,7 @@ function decrypt(value) {
 async function hhFetch(url, token, options = {}) {
   const response = await fetch(url, {
     ...options,
+    signal: options.signal || AbortSignal.timeout(15_000),
     headers: { 'HH-User-Agent': userAgent, Authorization: `Bearer ${token}`, ...options.headers },
   });
   if (!response.ok) throw new Error(`hh.ru ${response.status}: ${await response.text()}`);
@@ -96,12 +97,20 @@ export async function syncIncoming() {
       ON CONFLICT(hh_id) DO UPDATE SET name=$2,status='active',alternate_url=$3,payload=$4,synced_at=NOW()`, [vacancy.id, vacancy.name, vacancy.alternate_url, vacancy]);
     const negotiationIndex = await hhFetch(`https://api.hh.ru/negotiations?vacancy_id=${encodeURIComponent(vacancy.id)}&status=active&with_generated_collections=true`, token);
     const negotiationMap = new Map();
-    for (const collection of negotiationIndex.collections || []) {
-      if (!collection.url || !collection.counters?.total) continue;
-      const collectionUrl = new URL(collection.url);
-      collectionUrl.searchParams.set('per_page', '50');
-      const page = await hhFetch(collectionUrl.toString(), token);
-      for (const item of page.items || []) negotiationMap.set(item.id, item);
+    const collectionRequests = (negotiationIndex.collections || [])
+      .filter(collection => collection.url && collection.counters?.total)
+      .map(async collection => {
+        const collectionUrl = new URL(collection.url);
+        collectionUrl.searchParams.set('per_page', '50');
+        return hhFetch(collectionUrl.toString(), token);
+      });
+    const collectionPages = await Promise.allSettled(collectionRequests);
+    for (const result of collectionPages) {
+      if (result.status === 'rejected') {
+        console.warn(`Unable to sync negotiation collection: ${result.reason?.message || result.reason}`);
+        continue;
+      }
+      for (const item of result.value.items || []) negotiationMap.set(item.id, item);
     }
     for (const item of negotiationMap.values()) {
       const resume = item.resume || {};
