@@ -75,12 +75,12 @@ export async function syncIncoming() {
   const token = decrypt(integration.rows[0].access_token);
   const employerId = integration.rows[0].employer_id;
   if (!employerId) throw new Error('Подключён аккаунт соискателя. Переподключите hh.ru под менеджером работодателя');
-  const vacancies = await hhFetch(`https://api.hh.ru/employers/${employerId}/vacancies/active?per_page=100`, token);
+  const vacancies = await hhFetch(`https://api.hh.ru/employers/${employerId}/vacancies/active?per_page=50`, token);
   let candidateCount = 0;
   for (const vacancy of vacancies.items || []) {
     await pool.query(`INSERT INTO vacancies(hh_id,name,status,alternate_url,payload,synced_at) VALUES($1,$2,'active',$3,$4,NOW())
       ON CONFLICT(hh_id) DO UPDATE SET name=$2,status='active',alternate_url=$3,payload=$4,synced_at=NOW()`, [vacancy.id, vacancy.name, vacancy.alternate_url, vacancy]);
-    const negotiations = await hhFetch(`https://api.hh.ru/negotiations?vacancy_id=${encodeURIComponent(vacancy.id)}&status=active&per_page=100`, token);
+    const negotiations = await hhFetch(`https://api.hh.ru/negotiations?vacancy_id=${encodeURIComponent(vacancy.id)}&status=active&per_page=50`, token);
     for (const item of negotiations.items || []) {
       const resume = item.resume || {};
       const name = [resume.first_name, resume.last_name].filter(Boolean).join(' ') || resume.title || 'Кандидат';
