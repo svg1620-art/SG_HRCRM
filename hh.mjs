@@ -94,8 +94,16 @@ export async function syncIncoming() {
   for (const vacancy of vacancies.items || []) {
     await pool.query(`INSERT INTO vacancies(hh_id,name,status,alternate_url,payload,synced_at) VALUES($1,$2,'active',$3,$4,NOW())
       ON CONFLICT(hh_id) DO UPDATE SET name=$2,status='active',alternate_url=$3,payload=$4,synced_at=NOW()`, [vacancy.id, vacancy.name, vacancy.alternate_url, vacancy]);
-    const negotiations = await hhFetch(`https://api.hh.ru/negotiations?vacancy_id=${encodeURIComponent(vacancy.id)}&status=active&per_page=50`, token);
-    for (const item of negotiations.items || []) {
+    const negotiationIndex = await hhFetch(`https://api.hh.ru/negotiations?vacancy_id=${encodeURIComponent(vacancy.id)}&status=active&with_generated_collections=true`, token);
+    const negotiationMap = new Map();
+    for (const collection of negotiationIndex.collections || []) {
+      if (!collection.url || !collection.counters?.total) continue;
+      const collectionUrl = new URL(collection.url);
+      collectionUrl.searchParams.set('per_page', '50');
+      const page = await hhFetch(collectionUrl.toString(), token);
+      for (const item of page.items || []) negotiationMap.set(item.id, item);
+    }
+    for (const item of negotiationMap.values()) {
       const resume = item.resume || {};
       const name = [resume.first_name, resume.last_name].filter(Boolean).join(' ') || resume.title || 'Кандидат';
       await pool.query(`INSERT INTO candidates(hh_negotiation_id,hh_resume_id,hh_vacancy_id,name,payload,updated_at) VALUES($1,$2,$3,$4,$5,NOW())
