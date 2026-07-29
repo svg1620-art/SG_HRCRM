@@ -75,7 +75,21 @@ export async function syncIncoming() {
   const token = decrypt(integration.rows[0].access_token);
   const employerId = integration.rows[0].employer_id;
   if (!employerId) throw new Error('Подключён аккаунт соискателя. Переподключите hh.ru под менеджером работодателя');
-  const vacancies = await hhFetch(`https://api.hh.ru/employers/${employerId}/vacancies/active?per_page=50`, token);
+  const ownVacancies = await hhFetch(`https://api.hh.ru/employers/${employerId}/vacancies/active?per_page=50`, token);
+  const vacancyMap = new Map((ownVacancies.items || []).map(vacancy => [vacancy.id, vacancy]));
+  if (!vacancyMap.size) {
+    try {
+      const managers = await hhFetch(`https://api.hh.ru/employers/${employerId}/managers?per_page=200`, token);
+      for (const manager of managers.items || []) {
+        if (!manager.vacancies_count) continue;
+        const assigned = await hhFetch(`https://api.hh.ru/employers/${employerId}/vacancies/active?manager_id=${encodeURIComponent(manager.id)}&per_page=50`, token);
+        for (const vacancy of assigned.items || []) vacancyMap.set(vacancy.id, vacancy);
+      }
+    } catch (error) {
+      console.warn(`Unable to sync vacancies for all managers: ${error.message}`);
+    }
+  }
+  const vacancies = { items: [...vacancyMap.values()] };
   let candidateCount = 0;
   for (const vacancy of vacancies.items || []) {
     await pool.query(`INSERT INTO vacancies(hh_id,name,status,alternate_url,payload,synced_at) VALUES($1,$2,'active',$3,$4,NOW())
