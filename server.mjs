@@ -1,7 +1,7 @@
 import { createReadStream, existsSync, statSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { extname, join, normalize } from 'node:path';
-import { databaseStatus, migrate } from './database.mjs';
+import { databaseStatus, getCrmData, migrate, updateCandidateStage } from './database.mjs';
 import { completeAuthorization, createAuthorizationUrl, integrationStatus, syncIncoming } from './hh.mjs';
 
 const root = join(process.cwd(), 'dist');
@@ -24,10 +24,25 @@ function json(response, status, body) {
   response.end(JSON.stringify(body));
 }
 
+async function readJson(request) {
+  let body = '';
+  for await (const chunk of request) {
+    body += chunk;
+    if (body.length > 32_768) throw new Error('Request body is too large');
+  }
+  return body ? JSON.parse(body) : {};
+}
+
 createServer(async (request, response) => {
   const pathname = decodeURIComponent(new URL(request.url || '/', 'http://localhost').pathname);
   try {
     if (pathname === '/api/health') return json(response, 200, { ok: true, database: await databaseStatus() });
+    if (pathname === '/api/crm') return json(response, 200, await getCrmData());
+    const stageMatch = pathname.match(/^\/api\/candidates\/(\d+)\/stage$/);
+    if (stageMatch && request.method === 'PATCH') {
+      const body = await readJson(request);
+      return json(response, 200, await updateCandidateStage(Number(stageMatch[1]), body.stage));
+    }
     if (pathname === '/api/hh/status') return json(response, 200, { hh: await integrationStatus(), database: await databaseStatus() });
     if (pathname === '/api/hh/connect') {
       response.writeHead(302, { Location: await createAuthorizationUrl(), 'Cache-Control': 'no-store' });

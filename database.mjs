@@ -64,3 +64,54 @@ export async function databaseStatus() {
     return { configured: true, connected: false, error: error.message };
   }
 }
+
+export async function getCrmData() {
+  if (!pool) return { vacancies: [], candidates: [] };
+  const [vacanciesResult, candidatesResult] = await Promise.all([
+    pool.query(`SELECT id, hh_id, name, status, alternate_url, synced_at
+      FROM vacancies WHERE status='active' ORDER BY name`),
+    pool.query(`SELECT id, hh_negotiation_id, hh_resume_id, hh_vacancy_id, name, stage, score, payload, updated_at
+      FROM candidates ORDER BY updated_at DESC`),
+  ]);
+  const vacancyNames = new Map(vacanciesResult.rows.map(row => [row.hh_id, row.name]));
+  return {
+    vacancies: vacanciesResult.rows.map(row => ({
+      id: Number(row.id),
+      hhId: row.hh_id,
+      name: row.name,
+      status: row.status,
+      url: row.alternate_url,
+      syncedAt: row.synced_at,
+    })),
+    candidates: candidatesResult.rows.map(row => {
+      const resume = row.payload?.resume || {};
+      const salary = resume.salary;
+      return {
+        id: Number(row.id),
+        hhNegotiationId: row.hh_negotiation_id,
+        hhResumeId: row.hh_resume_id,
+        name: row.name,
+        role: resume.title || 'Кандидат',
+        vacancy: vacancyNames.get(row.hh_vacancy_id) || `Вакансия ${row.hh_vacancy_id}`,
+        stage: row.stage,
+        score: row.score,
+        location: resume.area?.name || 'Не указано',
+        salary: salary ? `${salary.amount || salary.from || salary.to || ''} ${salary.currency || ''}`.trim() : 'Не указано',
+        experience: resume.total_experience?.months ? `${Math.floor(resume.total_experience.months / 12)} лет` : 'Не указано',
+        updatedAt: row.updated_at,
+      };
+    }),
+  };
+}
+
+export async function updateCandidateStage(id, stage) {
+  if (!pool) throw new Error('DATABASE_URL is not configured');
+  const allowed = ['Новый', 'Скрининг', 'Диалог', 'Интервью', 'Оффер', 'Нанят', 'Отказ'];
+  if (!allowed.includes(stage)) throw new Error('Unknown candidate stage');
+  const result = await pool.query(
+    'UPDATE candidates SET stage=$1, updated_at=NOW() WHERE id=$2 RETURNING id, stage',
+    [stage, id],
+  );
+  if (!result.rowCount) throw new Error('Candidate not found');
+  return { id: Number(result.rows[0].id), stage: result.rows[0].stage };
+}
