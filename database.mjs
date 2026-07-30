@@ -191,7 +191,7 @@ export async function replaceScoringCriteria(vacancyId, criteria) {
     const description = String(item?.description || '').trim();
     const weight = Number(item?.weight);
     if (!name || name.length > 120) throw new Error('Each criterion must have a name');
-    if (description.length > 500) throw new Error('Criterion description is too long');
+    if (description.length > 1500) throw new Error('Criterion description is too long');
     if (!Number.isInteger(weight) || weight < 0 || weight > 100) throw new Error('Weight must be between 0 and 100');
     return { name, description, weight, position };
   });
