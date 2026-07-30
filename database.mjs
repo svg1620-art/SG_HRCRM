@@ -52,6 +52,8 @@ export async function migrate() {
       position INTEGER NOT NULL DEFAULT 0
     );
     CREATE INDEX IF NOT EXISTS candidates_vacancy_idx ON candidates(hh_vacancy_id);
+    ALTER TABLE candidates ADD COLUMN IF NOT EXISTS score_details JSONB NOT NULL DEFAULT '[]';
+    ALTER TABLE candidates ADD COLUMN IF NOT EXISTS scored_at TIMESTAMPTZ;
   `);
 }
 
@@ -70,7 +72,7 @@ export async function getCrmData() {
   const [vacanciesResult, candidatesResult] = await Promise.all([
     pool.query(`SELECT id, hh_id, name, status, alternate_url, synced_at
       FROM vacancies WHERE status='active' ORDER BY name`),
-    pool.query(`SELECT id, hh_negotiation_id, hh_resume_id, hh_vacancy_id, name, stage, score, payload, updated_at
+    pool.query(`SELECT id, hh_negotiation_id, hh_resume_id, hh_vacancy_id, name, stage, score, score_details, payload, updated_at
       FROM candidates ORDER BY updated_at DESC`),
   ]);
   const vacancyNames = new Map(vacanciesResult.rows.map(row => [row.hh_id, row.name]));
@@ -95,6 +97,7 @@ export async function getCrmData() {
         vacancy: vacancyNames.get(row.hh_vacancy_id) || `Вакансия ${row.hh_vacancy_id}`,
         stage: row.stage,
         score: row.score,
+        factors: row.score_details || [],
         location: resume.area?.name || 'Не указано',
         salary: salary ? `${salary.amount || salary.from || salary.to || ''} ${salary.currency || ''}`.trim() : 'Не указано',
         experience: resume.total_experience?.months ? `${Math.floor(resume.total_experience.months / 12)} лет` : 'Не указано',
@@ -102,6 +105,41 @@ export async function getCrmData() {
       };
     }),
   };
+}
+
+export async function getCandidatesForScoring(vacancyId, limit = 10) {
+  if (!pool) throw new Error('DATABASE_URL is not configured');
+  const vacancyResult = await pool.query(
+    'SELECT id, hh_id, name, payload FROM vacancies WHERE id=$1',
+    [vacancyId],
+  );
+  if (!vacancyResult.rowCount) throw new Error('Vacancy not found');
+  const criteriaResult = await getScoringCriteria(vacancyId);
+  if (!criteriaResult.criteria.length) throw new Error('Configure scoring criteria first');
+  const candidatesResult = await pool.query(
+    `SELECT id, name, payload
+      FROM candidates
+      WHERE hh_vacancy_id=$1 AND score IS NULL
+      ORDER BY updated_at DESC
+      LIMIT $2`,
+    [vacancyResult.rows[0].hh_id, limit],
+  );
+  return {
+    vacancy: vacancyResult.rows[0],
+    criteria: criteriaResult.criteria,
+    candidates: candidatesResult.rows,
+  };
+}
+
+export async function saveCandidateScore(candidateId, score, factors) {
+  if (!pool) throw new Error('DATABASE_URL is not configured');
+  const result = await pool.query(
+    `UPDATE candidates
+      SET score=$1, score_details=$2, scored_at=NOW(), updated_at=NOW()
+      WHERE id=$3 RETURNING id`,
+    [score, JSON.stringify(factors), candidateId],
+  );
+  if (!result.rowCount) throw new Error('Candidate not found');
 }
 
 export async function updateCandidateStage(id, stage) {

@@ -10,6 +10,7 @@ import {
   updateCandidateStage,
 } from './database.mjs';
 import { completeAuthorization, createAuthorizationUrl, integrationStatus, syncIncoming } from './hh.mjs';
+import { scoreVacancyCandidates } from './ai.mjs';
 
 const root = join(process.cwd(), 'dist');
 const port = Number(process.env.PORT || 3000);
@@ -57,6 +58,10 @@ createServer(async (request, response) => {
     if (criteriaMatch && request.method === 'PUT') {
       const body = await readJson(request);
       return json(response, 200, await replaceScoringCriteria(Number(criteriaMatch[1]), body.criteria));
+    }
+    const scoreMatch = pathname.match(/^\/api\/vacancies\/(\d+)\/score$/);
+    if (scoreMatch && request.method === 'POST') {
+      return json(response, 200, await scoreVacancyCandidates(Number(scoreMatch[1])));
     }
     if (pathname === '/api/hh/status') return json(response, 200, { hh: await integrationStatus(), database: await databaseStatus() });
     if (pathname === '/api/hh/connect') {
