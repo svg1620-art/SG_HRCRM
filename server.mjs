@@ -1,7 +1,14 @@
 import { createReadStream, existsSync, statSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { extname, join, normalize } from 'node:path';
-import { databaseStatus, getCrmData, migrate, updateCandidateStage } from './database.mjs';
+import {
+  databaseStatus,
+  getCrmData,
+  getScoringCriteria,
+  migrate,
+  replaceScoringCriteria,
+  updateCandidateStage,
+} from './database.mjs';
 import { completeAuthorization, createAuthorizationUrl, integrationStatus, syncIncoming } from './hh.mjs';
 
 const root = join(process.cwd(), 'dist');
@@ -42,6 +49,14 @@ createServer(async (request, response) => {
     if (stageMatch && request.method === 'PATCH') {
       const body = await readJson(request);
       return json(response, 200, await updateCandidateStage(Number(stageMatch[1]), body.stage));
+    }
+    const criteriaMatch = pathname.match(/^\/api\/vacancies\/(\d+)\/criteria$/);
+    if (criteriaMatch && request.method === 'GET') {
+      return json(response, 200, await getScoringCriteria(Number(criteriaMatch[1])));
+    }
+    if (criteriaMatch && request.method === 'PUT') {
+      const body = await readJson(request);
+      return json(response, 200, await replaceScoringCriteria(Number(criteriaMatch[1]), body.criteria));
     }
     if (pathname === '/api/hh/status') return json(response, 200, { hh: await integrationStatus(), database: await databaseStatus() });
     if (pathname === '/api/hh/connect') {

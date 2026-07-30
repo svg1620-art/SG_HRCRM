@@ -115,3 +115,70 @@ export async function updateCandidateStage(id, stage) {
   if (!result.rowCount) throw new Error('Candidate not found');
   return { id: Number(result.rows[0].id), stage: result.rows[0].stage };
 }
+
+export async function getScoringCriteria(vacancyId) {
+  if (!pool) throw new Error('DATABASE_URL is not configured');
+  const vacancyResult = await pool.query(
+    'SELECT id, name FROM vacancies WHERE id=$1',
+    [vacancyId],
+  );
+  if (!vacancyResult.rowCount) throw new Error('Vacancy not found');
+  const criteriaResult = await pool.query(
+    `SELECT id, name, description, weight, position
+      FROM scoring_criteria
+      WHERE vacancy_id=$1
+      ORDER BY position, id`,
+    [vacancyId],
+  );
+  return {
+    vacancy: {
+      id: Number(vacancyResult.rows[0].id),
+      name: vacancyResult.rows[0].name,
+    },
+    criteria: criteriaResult.rows.map(row => ({
+      id: Number(row.id),
+      name: row.name,
+      description: row.description,
+      weight: row.weight,
+      position: row.position,
+    })),
+  };
+}
+
+export async function replaceScoringCriteria(vacancyId, criteria) {
+  if (!pool) throw new Error('DATABASE_URL is not configured');
+  if (!Array.isArray(criteria) || criteria.length > 20) throw new Error('Invalid criteria list');
+  const normalized = criteria.map((item, position) => {
+    const name = String(item?.name || '').trim();
+    const description = String(item?.description || '').trim();
+    const weight = Number(item?.weight);
+    if (!name || name.length > 120) throw new Error('Each criterion must have a name');
+    if (description.length > 500) throw new Error('Criterion description is too long');
+    if (!Number.isInteger(weight) || weight < 0 || weight > 100) throw new Error('Weight must be between 0 and 100');
+    return { name, description, weight, position };
+  });
+  const total = normalized.reduce((sum, item) => sum + item.weight, 0);
+  if (normalized.length && total !== 100) throw new Error('Criteria weights must add up to 100');
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const vacancyResult = await client.query('SELECT id FROM vacancies WHERE id=$1', [vacancyId]);
+    if (!vacancyResult.rowCount) throw new Error('Vacancy not found');
+    await client.query('DELETE FROM scoring_criteria WHERE vacancy_id=$1', [vacancyId]);
+    for (const item of normalized) {
+      await client.query(
+        `INSERT INTO scoring_criteria (vacancy_id, name, description, weight, position)
+          VALUES ($1, $2, $3, $4, $5)`,
+        [vacancyId, item.name, item.description, item.weight, item.position],
+      );
+    }
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+  return getScoringCriteria(vacancyId);
+}
