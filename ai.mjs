@@ -3,6 +3,24 @@ import { getCandidatesForScoring, saveCandidateScore } from './database.mjs';
 const apiUrl = 'https://api.openai.com/v1/responses';
 const model = process.env.OPENAI_MODEL?.trim() || 'gpt-5.6-luna';
 
+function professionalResume(resume = {}) {
+  return {
+    title: resume.title,
+    total_experience: resume.total_experience,
+    experience: resume.experience,
+    skill_set: resume.skill_set,
+    skills: resume.skills,
+    education: resume.education,
+    language: resume.language,
+    professional_roles: resume.professional_roles,
+    employments: resume.employments,
+    schedules: resume.schedules,
+    travel_time: resume.travel_time,
+    business_trip_readiness: resume.business_trip_readiness,
+    about_me: resume.skills_description || resume.about_me,
+  };
+}
+
 function outputText(response) {
   if (response.output_text) return response.output_text;
   for (const item of response.output || []) {
@@ -33,9 +51,12 @@ async function scoreCandidate(vacancy, criteria, candidate) {
           content: `You assist a human recruiter with a preliminary, non-binding assessment.
 Use only job-relevant professional evidence. Ignore and never infer age, sex, gender,
 photo, ethnicity, nationality, health, disability, religion, family status, and other
-sensitive personal characteristics. Do not penalize missing information: mark it as
-insufficient evidence. Return concise Russian explanations. The human recruiter makes
-all employment decisions.`,
+sensitive personal characteristics. Score every criterion on a calibrated 0–100 scale:
+0 means clear evidence of complete mismatch, 25 means mostly mismatch, 50 means mixed
+or insufficient professional evidence, 75 means a good match, and 100 means exceptionally
+strong direct evidence. Missing information is not a mismatch and should normally receive
+50 with an explanation that evidence is insufficient. Return concise Russian explanations.
+The human recruiter makes all employment decisions.`,
         },
         {
           role: 'user',
@@ -46,7 +67,7 @@ all employment decisions.`,
               keySkills: vacancy.payload?.key_skills,
             },
             criteria,
-            candidate: candidate.payload?.resume || {},
+            candidate: professionalResume(candidate.payload?.resume),
             dialogue: candidate.dialogue_transcript || [],
           }),
         },

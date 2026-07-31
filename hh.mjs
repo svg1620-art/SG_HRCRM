@@ -140,8 +140,14 @@ export async function syncIncoming() {
   const vacancies = { items: [...vacancyMap.values()] };
   let candidateCount = 0;
   for (const vacancy of vacancies.items || []) {
+    let fullVacancy = vacancy;
+    try {
+      fullVacancy = await hhFetch(vacancy.url || `https://api.hh.ru/vacancies/${vacancy.id}`, token);
+    } catch (error) {
+      console.warn(`Unable to load full vacancy ${vacancy.id}: ${error.message}`);
+    }
     await pool.query(`INSERT INTO vacancies(hh_id,name,status,alternate_url,payload,synced_at) VALUES($1,$2,'active',$3,$4,NOW())
-      ON CONFLICT(hh_id) DO UPDATE SET name=$2,status='active',alternate_url=$3,payload=$4,synced_at=NOW()`, [vacancy.id, vacancy.name, vacancy.alternate_url, vacancy]);
+      ON CONFLICT(hh_id) DO UPDATE SET name=$2,status='active',alternate_url=$3,payload=$4,synced_at=NOW()`, [vacancy.id, vacancy.name, vacancy.alternate_url, fullVacancy]);
     const negotiationIndex = await hhFetch(`https://api.hh.ru/negotiations?vacancy_id=${encodeURIComponent(vacancy.id)}&status=active&with_generated_collections=true`, token);
     const negotiationMap = new Map();
     const collectionRequests = (negotiationIndex.collections || [])
@@ -160,10 +166,27 @@ export async function syncIncoming() {
       for (const item of result.value.items || []) negotiationMap.set(item.id, item);
     }
     for (const item of negotiationMap.values()) {
-      const resume = item.resume || {};
+      let resume = item.resume || {};
+      let hasFullResume = false;
+      if (resume.id) {
+        try {
+          const resumeUrl = new URL(resume.url || `https://api.hh.ru/resumes/${resume.id}`);
+          resumeUrl.searchParams.set('topic_id', item.id);
+          resume = await hhFetch(resumeUrl.toString(), token);
+          hasFullResume = true;
+        } catch (error) {
+          console.warn(`Unable to load full resume ${resume.id}: ${error.message}`);
+        }
+      }
       const name = [resume.first_name, resume.last_name].filter(Boolean).join(' ') || resume.title || 'Кандидат';
+      const payload = { ...item, resume, _full_resume: hasFullResume };
       await pool.query(`INSERT INTO candidates(hh_negotiation_id,hh_resume_id,hh_vacancy_id,name,payload,updated_at) VALUES($1,$2,$3,$4,$5,NOW())
-        ON CONFLICT(hh_negotiation_id) DO UPDATE SET hh_resume_id=$2,hh_vacancy_id=$3,name=$4,payload=$5,updated_at=NOW()`, [item.id, resume.id || null, vacancy.id, name, item]);
+        ON CONFLICT(hh_negotiation_id) DO UPDATE SET
+          hh_resume_id=$2,hh_vacancy_id=$3,name=$4,payload=$5,
+          score=CASE WHEN COALESCE((candidates.payload->>'_full_resume')::boolean,FALSE)=FALSE AND COALESCE(($5::jsonb->>'_full_resume')::boolean,FALSE)=TRUE THEN NULL ELSE candidates.score END,
+          score_details=CASE WHEN COALESCE((candidates.payload->>'_full_resume')::boolean,FALSE)=FALSE AND COALESCE(($5::jsonb->>'_full_resume')::boolean,FALSE)=TRUE THEN '[]'::jsonb ELSE candidates.score_details END,
+          scored_at=CASE WHEN COALESCE((candidates.payload->>'_full_resume')::boolean,FALSE)=FALSE AND COALESCE(($5::jsonb->>'_full_resume')::boolean,FALSE)=TRUE THEN NULL ELSE candidates.scored_at END,
+          updated_at=NOW()`, [item.id, resume.id || null, vacancy.id, name, payload]);
       candidateCount += 1;
     }
   }
