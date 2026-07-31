@@ -1,4 +1,4 @@
-import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
+import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from 'node:crypto';
 import { pool } from './database.mjs';
 
 const userAgent = process.env.HH_USER_AGENT || 'SG-HRCRM/0.1 (serg@serviceguru.ru)';
@@ -29,6 +29,53 @@ async function hhFetch(url, token, options = {}) {
   });
   if (!response.ok) throw new Error(`hh.ru ${response.status}: ${await response.text()}`);
   return response.status === 204 ? null : response.json();
+}
+
+async function employerToken() {
+  if (!pool) throw new Error('DATABASE_URL is not configured');
+  const result = await pool.query("SELECT access_token, refresh_token, expires_at FROM integrations WHERE provider='hh'");
+  if (!result.rowCount) throw new Error('hh.ru is not connected');
+  const integration = result.rows[0];
+  if (!integration.expires_at || new Date(integration.expires_at).getTime() > Date.now() + 60_000) {
+    return decrypt(integration.access_token);
+  }
+  if (!integration.refresh_token) throw new Error('hh.ru authorization expired; reconnect the integration');
+  const body = new URLSearchParams({
+    grant_type: 'refresh_token',
+    refresh_token: decrypt(integration.refresh_token),
+  });
+  const response = await fetch('https://api.hh.ru/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'HH-User-Agent': userAgent },
+    body,
+  });
+  if (!response.ok) throw new Error(`hh.ru token refresh ${response.status}: ${await response.text()}`);
+  const tokens = await response.json();
+  await pool.query(
+    `UPDATE integrations SET access_token=$1,refresh_token=$2,
+      expires_at=NOW()+($3 || ' seconds')::interval,updated_at=NOW()
+      WHERE provider='hh'`,
+    [
+      encrypt(tokens.access_token),
+      encrypt(tokens.refresh_token || decrypt(integration.refresh_token)),
+      String(tokens.expires_in || 0),
+    ],
+  );
+  return tokens.access_token;
+}
+
+export async function getChatMessages(chatId) {
+  const token = await employerToken();
+  return hhFetch(`https://api.hh.ru/common/chats/${encodeURIComponent(chatId)}/messages?order=next&limit=50`, token);
+}
+
+export async function sendChatMessage(chatId, text) {
+  const token = await employerToken();
+  return hhFetch(`https://api.hh.ru/common/chats/${encodeURIComponent(chatId)}/messages`, token, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ idempotency_key: randomUUID(), text }),
+  });
 }
 
 export async function createAuthorizationUrl() {
@@ -71,9 +118,9 @@ export async function integrationStatus() {
 
 export async function syncIncoming() {
   if (!pool) throw new Error('DATABASE_URL is not configured');
-  const integration = await pool.query("SELECT access_token, employer_id FROM integrations WHERE provider='hh'");
+  const integration = await pool.query("SELECT employer_id FROM integrations WHERE provider='hh'");
   if (!integration.rowCount) throw new Error('hh.ru is not connected');
-  const token = decrypt(integration.rows[0].access_token);
+  const token = await employerToken();
   const employerId = integration.rows[0].employer_id;
   if (!employerId) throw new Error('Подключён аккаунт соискателя. Переподключите hh.ru под менеджером работодателя');
   const ownVacancies = await hhFetch(`https://api.hh.ru/employers/${employerId}/vacancies/active?per_page=50`, token);

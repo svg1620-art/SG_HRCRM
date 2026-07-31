@@ -51,6 +51,22 @@ export async function migrate() {
       weight INTEGER NOT NULL CHECK (weight BETWEEN 0 AND 100),
       position INTEGER NOT NULL DEFAULT 0
     );
+    CREATE TABLE IF NOT EXISTS dialogue_configs (
+      vacancy_id BIGINT PRIMARY KEY REFERENCES vacancies(id) ON DELETE CASCADE,
+      enabled BOOLEAN NOT NULL DEFAULT FALSE,
+      greeting TEXT NOT NULL DEFAULT '',
+      questions JSONB NOT NULL DEFAULT '[]',
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS candidate_dialogues (
+      candidate_id BIGINT PRIMARY KEY REFERENCES candidates(id) ON DELETE CASCADE,
+      status TEXT NOT NULL DEFAULT 'pending',
+      question_index INTEGER NOT NULL DEFAULT 0,
+      last_applicant_message_id TEXT,
+      transcript JSONB NOT NULL DEFAULT '[]',
+      last_sent_at TIMESTAMPTZ,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
     CREATE INDEX IF NOT EXISTS candidates_vacancy_idx ON candidates(hh_vacancy_id);
     ALTER TABLE candidates ADD COLUMN IF NOT EXISTS score_details JSONB NOT NULL DEFAULT '[]';
     ALTER TABLE candidates ADD COLUMN IF NOT EXISTS scored_at TIMESTAMPTZ;
@@ -117,10 +133,11 @@ export async function getCandidatesForScoring(vacancyId, limit = 10) {
   const criteriaResult = await getScoringCriteria(vacancyId);
   if (!criteriaResult.criteria.length) throw new Error('Configure scoring criteria first');
   const candidatesResult = await pool.query(
-    `SELECT id, name, payload
-      FROM candidates
-      WHERE hh_vacancy_id=$1 AND score IS NULL
-      ORDER BY updated_at DESC
+    `SELECT c.id, c.name, c.payload, COALESCE(cd.transcript, '[]') AS dialogue_transcript
+      FROM candidates c
+      LEFT JOIN candidate_dialogues cd ON cd.candidate_id=c.id
+      WHERE c.hh_vacancy_id=$1 AND c.score IS NULL
+      ORDER BY c.updated_at DESC
       LIMIT $2`,
     [vacancyResult.rows[0].hh_id, limit],
   );
@@ -219,4 +236,118 @@ export async function replaceScoringCriteria(vacancyId, criteria) {
     client.release();
   }
   return getScoringCriteria(vacancyId);
+}
+
+export async function getDialogueConfig(vacancyId) {
+  if (!pool) throw new Error('DATABASE_URL is not configured');
+  const vacancyResult = await pool.query('SELECT id, name FROM vacancies WHERE id=$1', [vacancyId]);
+  if (!vacancyResult.rowCount) throw new Error('Vacancy not found');
+  const result = await pool.query(
+    'SELECT enabled, greeting, questions, updated_at FROM dialogue_configs WHERE vacancy_id=$1',
+    [vacancyId],
+  );
+  const config = result.rows[0] || {};
+  return {
+    vacancy: { id: Number(vacancyResult.rows[0].id), name: vacancyResult.rows[0].name },
+    enabled: Boolean(config.enabled),
+    greeting: config.greeting || 'Здравствуйте! Спасибо за отклик на нашу вакансию. Хотим задать несколько коротких вопросов.',
+    questions: config.questions || [],
+    updatedAt: config.updated_at || null,
+  };
+}
+
+export async function saveDialogueConfig(vacancyId, input) {
+  if (!pool) throw new Error('DATABASE_URL is not configured');
+  const greeting = String(input?.greeting || '').trim();
+  const questions = Array.isArray(input?.questions)
+    ? input.questions.map(item => String(item || '').trim()).filter(Boolean)
+    : [];
+  if (!greeting || greeting.length > 1500) throw new Error('Greeting must contain 1–1500 characters');
+  if (!questions.length || questions.length > 10) throw new Error('Add from 1 to 10 questions');
+  if (questions.some(question => question.length > 1000)) throw new Error('Each question must be no longer than 1000 characters');
+  const vacancyResult = await pool.query('SELECT id FROM vacancies WHERE id=$1', [vacancyId]);
+  if (!vacancyResult.rowCount) throw new Error('Vacancy not found');
+  await pool.query(
+    `INSERT INTO dialogue_configs(vacancy_id, enabled, greeting, questions, updated_at)
+      VALUES($1,$2,$3,$4,NOW())
+      ON CONFLICT(vacancy_id) DO UPDATE
+      SET enabled=$2,greeting=$3,questions=$4,updated_at=NOW()`,
+    [vacancyId, Boolean(input?.enabled), greeting, JSON.stringify(questions)],
+  );
+  return getDialogueConfig(vacancyId);
+}
+
+export async function getDialogueWork() {
+  if (!pool) throw new Error('DATABASE_URL is not configured');
+  const configs = await pool.query(
+    `SELECT dc.vacancy_id, dc.greeting, dc.questions, v.hh_id, v.name
+      FROM dialogue_configs dc JOIN vacancies v ON v.id=dc.vacancy_id
+      WHERE dc.enabled=TRUE`,
+  );
+  const work = [];
+  for (const config of configs.rows) {
+    await pool.query(
+      `WITH available AS (
+        SELECT GREATEST(0, 5-COUNT(*))::int AS slots
+        FROM candidate_dialogues cd
+        JOIN candidates existing ON existing.id=cd.candidate_id
+        WHERE existing.hh_vacancy_id=$1 AND cd.status IN ('pending','active')
+      )
+      INSERT INTO candidate_dialogues(candidate_id)
+        SELECT c.id FROM candidates c, available
+        WHERE c.hh_vacancy_id=$1 AND c.stage='Новый'
+          AND COALESCE(c.payload->>'chat_id','') <> ''
+          AND NOT EXISTS (SELECT 1 FROM candidate_dialogues cd WHERE cd.candidate_id=c.id)
+        ORDER BY c.updated_at DESC LIMIT (SELECT slots FROM available)
+        ON CONFLICT(candidate_id) DO NOTHING`,
+      [config.hh_id],
+    );
+    const dialogues = await pool.query(
+      `SELECT cd.*, c.name, c.hh_negotiation_id, c.payload->>'chat_id' AS chat_id
+        FROM candidate_dialogues cd JOIN candidates c ON c.id=cd.candidate_id
+        WHERE c.hh_vacancy_id=$1 AND cd.status IN ('pending','active')
+        ORDER BY cd.updated_at LIMIT 20`,
+      [config.hh_id],
+    );
+    for (const dialogue of dialogues.rows) work.push({ config, dialogue });
+  }
+  return work;
+}
+
+export async function updateDialogue(candidateId, patch) {
+  if (!pool) throw new Error('DATABASE_URL is not configured');
+  const allowed = ['pending', 'active', 'completed', 'paused', 'error'];
+  if (!allowed.includes(patch.status)) throw new Error('Invalid dialogue status');
+  await pool.query(
+    `UPDATE candidate_dialogues SET status=$1,question_index=$2,
+      last_applicant_message_id=$3,transcript=$4,last_sent_at=$5,updated_at=NOW()
+      WHERE candidate_id=$6`,
+    [
+      patch.status,
+      patch.questionIndex,
+      patch.lastApplicantMessageId || null,
+      JSON.stringify(patch.transcript || []),
+      patch.lastSentAt || null,
+      candidateId,
+    ],
+  );
+  if (patch.status === 'active') {
+    await pool.query("UPDATE candidates SET stage='Диалог',updated_at=NOW() WHERE id=$1", [candidateId]);
+  }
+  if (patch.status === 'completed') {
+    await pool.query("UPDATE candidates SET stage='Скрининг',score=NULL,scored_at=NULL,updated_at=NOW() WHERE id=$1", [candidateId]);
+  }
+}
+
+export async function dialogueStats(vacancyId) {
+  if (!pool) throw new Error('DATABASE_URL is not configured');
+  const result = await pool.query(
+    `SELECT cd.status, COUNT(*)::int AS count
+      FROM candidate_dialogues cd
+      JOIN candidates c ON c.id=cd.candidate_id
+      JOIN vacancies v ON v.hh_id=c.hh_vacancy_id
+      WHERE v.id=$1 GROUP BY cd.status`,
+    [vacancyId],
+  );
+  return Object.fromEntries(result.rows.map(row => [row.status, row.count]));
 }

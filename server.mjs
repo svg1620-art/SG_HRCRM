@@ -3,17 +3,23 @@ import { createServer } from 'node:http';
 import { extname, join, normalize } from 'node:path';
 import {
   databaseStatus,
+  getDialogueConfig,
   getCrmData,
   getScoringCriteria,
   migrate,
   replaceScoringCriteria,
+  saveDialogueConfig,
   updateCandidateStage,
 } from './database.mjs';
 import { completeAuthorization, createAuthorizationUrl, integrationStatus, syncIncoming } from './hh.mjs';
 import { scoreVacancyCandidates } from './ai.mjs';
+import { dialogueStats, syncAutomatedDialogues } from './dialogue.mjs';
 
 const root = join(process.cwd(), 'dist');
 const port = Number(process.env.PORT || 3000);
+const adminUser = process.env.CRM_USERNAME?.trim();
+const adminPassword = process.env.CRM_PASSWORD?.trim();
+const authConfigured = Boolean(adminUser && adminPassword);
 const types = {
   '.css': 'text/css; charset=utf-8',
   '.html': 'text/html; charset=utf-8',
@@ -26,10 +32,33 @@ const types = {
 };
 
 await migrate();
+if (authConfigured) {
+  const dialogueTimer = setInterval(() => {
+    syncAutomatedDialogues().catch(error => console.error('Dialogue background sync failed', error));
+  }, 60_000);
+  dialogueTimer.unref();
+}
 
 function json(response, status, body) {
   response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
   response.end(JSON.stringify(body));
+}
+
+function authorized(request) {
+  if (!authConfigured) return false;
+  const header = request.headers.authorization || '';
+  if (!header.startsWith('Basic ')) return false;
+  try {
+    const [user, password] = Buffer.from(header.slice(6), 'base64').toString('utf8').split(':');
+    return user === adminUser && password === adminPassword;
+  } catch {
+    return false;
+  }
+}
+
+function requireAutomationAuth(request) {
+  if (!authConfigured) throw new Error('Для автодиалога задайте CRM_USERNAME и CRM_PASSWORD в Railway');
+  if (!authorized(request)) throw new Error('Требуется повторный вход администратора');
 }
 
 async function readJson(request) {
@@ -44,6 +73,13 @@ async function readJson(request) {
 createServer(async (request, response) => {
   const pathname = decodeURIComponent(new URL(request.url || '/', 'http://localhost').pathname);
   try {
+    if (authConfigured && pathname !== '/api/health' && pathname !== '/api/hh/callback' && !authorized(request)) {
+      response.writeHead(401, {
+        'Content-Type': 'text/plain; charset=utf-8',
+        'WWW-Authenticate': 'Basic realm="SG HRCRM"',
+      });
+      return response.end('Требуется вход в SG HRCRM');
+    }
     if (pathname === '/api/health') return json(response, 200, { ok: true, database: await databaseStatus() });
     if (pathname === '/api/crm') return json(response, 200, await getCrmData());
     const stageMatch = pathname.match(/^\/api\/candidates\/(\d+)\/stage$/);
@@ -62,6 +98,23 @@ createServer(async (request, response) => {
     const scoreMatch = pathname.match(/^\/api\/vacancies\/(\d+)\/score$/);
     if (scoreMatch && request.method === 'POST') {
       return json(response, 200, await scoreVacancyCandidates(Number(scoreMatch[1])));
+    }
+    const dialogueConfigMatch = pathname.match(/^\/api\/vacancies\/(\d+)\/dialogue$/);
+    if (dialogueConfigMatch && request.method === 'GET') {
+      const vacancyId = Number(dialogueConfigMatch[1]);
+      return json(response, 200, {
+        ...await getDialogueConfig(vacancyId),
+        stats: await dialogueStats(vacancyId),
+      });
+    }
+    if (dialogueConfigMatch && request.method === 'PUT') {
+      requireAutomationAuth(request);
+      const body = await readJson(request);
+      return json(response, 200, await saveDialogueConfig(Number(dialogueConfigMatch[1]), body));
+    }
+    if (pathname === '/api/dialogues/sync' && request.method === 'POST') {
+      requireAutomationAuth(request);
+      return json(response, 200, await syncAutomatedDialogues());
     }
     if (pathname === '/api/hh/status') return json(response, 200, { hh: await integrationStatus(), database: await databaseStatus() });
     if (pathname === '/api/hh/connect') {

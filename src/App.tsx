@@ -30,7 +30,7 @@ export function App(){
   {tab==='board'&&<Board items={items} visible={visible} vacancy={vacancy} vacancies={vacancyOptions} setVacancy={setVacancy} hh={hh} syncHh={syncHh} select={setSelected}/>}
   {tab==='candidates'&&<CandidatesView items={visible} select={setSelected}/>}
   {tab==='vacancies'&&<VacanciesView vacancies={vacancyOptions} items={items} open={name=>{setVacancy(name);setTab('board')}}/>}
-  {tab==='dialogs'&&<CandidatesView items={visible.filter(c=>c.stage==='Диалог')} select={setSelected} empty="Кандидатов на этапе «Диалог» пока нет."/>}
+  {tab==='dialogs'&&<DialogueSettings vacancies={vacancyOptions.filter(v=>v.id)}/>}
   {tab==='criteria'&&<Criteria vacancies={vacancyOptions.filter(v=>v.id)}/>}
   {tab==='settings'&&<SettingsView hh={hh} syncHh={syncHh}/>}</main>
   {selected&&<CandidatePanel candidate={selected} close={()=>setSelected(null)} move={move}/>} </div>
@@ -51,6 +51,29 @@ function VacanciesView({vacancies,items,open}:{vacancies:VacancyOption[];items:C
 
 function SettingsView({hh,syncHh}:{hh:HhState;syncHh:()=>void}){
  return <section className="settings-view"><div><span className={hh.connected?'status-dot connected-dot':'status-dot'}></span><span><b>Интеграция hh.ru</b><small>{hh.connected?'Подключена и готова к синхронизации':'Требуется подключение аккаунта работодателя'}</small></span>{hh.connected?<button className="primary" onClick={syncHh} disabled={hh.loading}>{hh.loading?'Обновление…':'Синхронизировать'}</button>:<button className="primary" onClick={()=>location.assign('/api/hh/connect')}>Подключить</button>}</div><div><span className="status-dot connected-dot"></span><span><b>OpenAI</b><small>Ключ хранится в Railway и используется только сервером</small></span></div></section>
+}
+
+function DialogueSettings({vacancies}:{vacancies:VacancyOption[]}){
+ const [vacancyId,setVacancyId]=useState<number|undefined>();
+ const [enabled,setEnabled]=useState(false);
+ const [greeting,setGreeting]=useState('');
+ const [questions,setQuestions]=useState<string[]>([]);
+ const [stats,setStats]=useState<Record<string,number>>({});
+ const [loading,setLoading]=useState(false);
+ const [message,setMessage]=useState('');
+ useEffect(()=>{if(!vacancyId&&vacancies[0]?.id)setVacancyId(vacancies[0].id)},[vacancies,vacancyId]);
+ useEffect(()=>{if(!vacancyId)return;setLoading(true);fetch(`/api/vacancies/${vacancyId}/dialogue`).then(async r=>{const data=await r.json();if(!r.ok)throw new Error(data.error);setEnabled(data.enabled);setGreeting(data.greeting);setQuestions(data.questions?.length?data.questions:[
+  'Расскажите о проекте, где ваша работа привела к измеримым заявкам или продажам. Какие показатели вы отслеживали?',
+  'Пришлите, пожалуйста, ссылку на 2–3 примера креативов или презентаций, которые вы самостоятельно сделали в Figma.',
+  'Как бы вы организовали вебинар для управляющих ресторанами: от идеи до обработки полученных лидов?',
+  'Какие AI-инструменты вы используете в работе и как проверяете качество результата?',
+  'Что вы сделали бы в первые 30 дней работы с нашими каналами?',
+ ]);setStats(data.stats||{});setMessage('')}).catch(e=>setMessage(e.message||'Не удалось загрузить настройки')).finally(()=>setLoading(false))},[vacancyId]);
+ const updateQuestion=(index:number,value:string)=>setQuestions(items=>items.map((item,i)=>i===index?value:item));
+ const save=async()=>{if(!vacancyId)return;setLoading(true);setMessage('');try{const r=await fetch(`/api/vacancies/${vacancyId}/dialogue`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled,greeting,questions})});const data=await r.json();if(!r.ok)throw new Error(data.error);setEnabled(data.enabled);setMessage(data.enabled?'Автодиалог включён. Новые сообщения проверяются каждую минуту.':'Настройки сохранены, автодиалог выключен.')}catch(e){setMessage(e instanceof Error?e.message:'Не удалось сохранить')}finally{setLoading(false)}};
+ const run=async()=>{setLoading(true);setMessage('Проверяем новые диалоги…');try{const r=await fetch('/api/dialogues/sync',{method:'POST'});const data=await r.json();if(!r.ok)throw new Error(data.error);setMessage(`Запущено: ${data.started||0}, продолжено: ${data.advanced||0}, завершено: ${data.completed||0}, ошибок: ${data.errors||0}`)}catch(e){setMessage(e instanceof Error?e.message:'Ошибка проверки диалогов')}finally{setLoading(false)}};
+ if(!vacancies.length)return <section className="empty-state">Сначала синхронизируйте вакансии из hh.ru.</section>;
+ return <section className="dialogue-settings"><div className="dialogue-top"><label className="criteria-vacancy">Вакансия<select value={vacancyId||''} onChange={e=>setVacancyId(Number(e.target.value))}>{vacancies.map(v=><option key={v.id} value={v.id}>{v.name}</option>)}</select></label><label className="automation-toggle"><input type="checkbox" checked={enabled} onChange={e=>setEnabled(e.target.checked)}/><span></span><b>Автодиалог {enabled?'включён':'выключен'}</b></label></div><div className="dialogue-stats"><span><b>{stats.active||0}</b> ждут ответа</span><span><b>{stats.completed||0}</b> завершены</span><span><b>{stats.paused||0}</b> приостановлены</span></div><label className="dialogue-field">Приветствие<textarea rows={4} maxLength={1500} value={greeting} onChange={e=>setGreeting(e.target.value)}/></label><div className="question-list"><div className="section-head"><h3>Вопросы по порядку</h3><button className="ghost-action" onClick={()=>setQuestions(items=>[...items,''])}><Plus/>Добавить вопрос</button></div>{questions.map((question,index)=><div key={index}><b>{index+1}</b><textarea rows={3} maxLength={1000} value={question} onChange={e=>updateQuestion(index,e.target.value)}/><button className="remove-criterion" title="Удалить вопрос" onClick={()=>setQuestions(items=>items.filter((_,i)=>i!==index))}><X/></button></div>)}</div><div className="dialogue-warning"><b>Перед включением проверьте тексты.</b><p>После сохранения с включённым переключателем CRM начнёт писать максимум пяти новым кандидатам за цикл и будет проверять ответы раз в минуту.</p></div>{message&&<p className="criteria-message">{message}</p>}<div className="dialogue-actions"><button className="ghost-action" onClick={run} disabled={loading||!enabled}>Проверить сейчас</button><button className="primary" onClick={save} disabled={loading||!greeting.trim()||!questions.some(Boolean)}>{loading?'Подождите…':'Сохранить настройки'}</button></div></section>
 }
 
 function Criteria({vacancies}:{vacancies:VacancyOption[]}){
