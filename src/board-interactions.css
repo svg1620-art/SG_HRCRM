@@ -1,0 +1,11 @@
+.score-filter{height:38px;border:1px solid #dde1de;background:#fff;display:flex;align-items:center;gap:6px;padding:0 9px;border-radius:6px}
+.score-filter svg{width:15px;color:#65716d}
+.score-filter select{border:0;background:transparent;outline:0;color:#394440;font-size:11px;cursor:pointer}
+.column{border:1px solid transparent;border-radius:7px;padding:0 5px 10px;transition:background .15s,border-color .15s}
+.column.drop-target{background:#e9f2ee;border-color:#6d9a8e}
+.column.drop-target .cards:empty:after{content:"Переместить сюда";display:grid;place-items:center;min-height:94px;border:1px dashed #8eaaa2;border-radius:7px;color:#648178;font-size:10px}
+.dragging-card{opacity:.42;cursor:grabbing}
+article[draggable="true"]{cursor:grab}
+article[draggable="true"]:active{cursor:grabbing}
+@media(max-width:1000px){.score-filter select{width:92px}}
+@media(max-width:650px){header{gap:10px}.header-actions{flex-wrap:wrap;justify-content:flex-end}.score-filter{height:36px}.score-filter select{width:86px}.column{padding-inline:4px}}
