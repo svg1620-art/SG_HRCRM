@@ -14,12 +14,19 @@ import {
 import { completeAuthorization, createAuthorizationUrl, integrationStatus, syncIncoming } from './hh.mjs';
 import { scoreVacancyCandidates } from './ai.mjs';
 import { dialogueStats, syncAutomatedDialogues } from './dialogue.mjs';
+import {
+  changePassword,
+  createAdmin,
+  currentUser,
+  ensureBootstrapAdmin,
+  listAdmins,
+  login,
+  logout,
+  setAdminActive,
+} from './auth.mjs';
 
 const root = join(process.cwd(), 'dist');
 const port = Number(process.env.PORT || 3000);
-const adminUser = process.env.CRM_USERNAME?.trim();
-const adminPassword = process.env.CRM_PASSWORD?.trim();
-const authConfigured = Boolean(adminUser && adminPassword);
 const types = {
   '.css': 'text/css; charset=utf-8',
   '.html': 'text/html; charset=utf-8',
@@ -32,33 +39,15 @@ const types = {
 };
 
 await migrate();
-if (authConfigured) {
-  const dialogueTimer = setInterval(() => {
-    syncAutomatedDialogues().catch(error => console.error('Dialogue background sync failed', error));
-  }, 60_000);
-  dialogueTimer.unref();
-}
+await ensureBootstrapAdmin();
+const dialogueTimer = setInterval(() => {
+  syncAutomatedDialogues().catch(error => console.error('Dialogue background sync failed', error));
+}, 60_000);
+dialogueTimer.unref();
 
 function json(response, status, body) {
   response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
   response.end(JSON.stringify(body));
-}
-
-function authorized(request) {
-  if (!authConfigured) return false;
-  const header = request.headers.authorization || '';
-  if (!header.startsWith('Basic ')) return false;
-  try {
-    const [user, password] = Buffer.from(header.slice(6), 'base64').toString('utf8').split(':');
-    return user === adminUser && password === adminPassword;
-  } catch {
-    return false;
-  }
-}
-
-function requireAutomationAuth(request) {
-  if (!authConfigured) throw new Error('Для автодиалога задайте CRM_USERNAME и CRM_PASSWORD в Railway');
-  if (!authorized(request)) throw new Error('Требуется повторный вход администратора');
 }
 
 async function readJson(request) {
@@ -73,14 +62,58 @@ async function readJson(request) {
 createServer(async (request, response) => {
   const pathname = decodeURIComponent(new URL(request.url || '/', 'http://localhost').pathname);
   try {
-    if (authConfigured && pathname !== '/api/health' && pathname !== '/api/hh/callback' && !authorized(request)) {
-      response.writeHead(401, {
-        'Content-Type': 'text/plain; charset=utf-8',
-        'WWW-Authenticate': 'Basic realm="SG HRCRM"',
-      });
-      return response.end('Требуется вход в SG HRCRM');
-    }
     if (pathname === '/api/health') return json(response, 200, { ok: true, database: await databaseStatus() });
+    if (pathname === '/api/auth/login' && request.method === 'POST') {
+      const body = await readJson(request);
+      const result = await login(body.username, body.password);
+      response.writeHead(200, {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Cache-Control': 'no-store',
+        'Set-Cookie': `sg_session=${encodeURIComponent(result.token)}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=1209600`,
+      });
+      return response.end(JSON.stringify({ user: result.user }));
+    }
+    if (pathname === '/api/hh/callback') {
+      const url = new URL(request.url || '/', 'http://localhost');
+      if (!url.searchParams.get('code') || !url.searchParams.get('state')) throw new Error(url.searchParams.get('error') || 'OAuth callback is incomplete');
+      await completeAuthorization(url.searchParams.get('code'), url.searchParams.get('state'));
+      response.writeHead(302, { Location: '/?hh=connected' });
+      return response.end();
+    }
+    const user = await currentUser(request);
+    if (pathname === '/api/auth/status') return json(response, 200, { authenticated: Boolean(user), user });
+    if (pathname.startsWith('/api/') && !user) return json(response, 401, { error: 'Требуется вход' });
+    if (pathname === '/api/auth/logout' && request.method === 'POST') {
+      await logout(request);
+      response.writeHead(200, {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Set-Cookie': 'sg_session=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0',
+      });
+      return response.end('{"ok":true}');
+    }
+    if (pathname === '/api/auth/password' && request.method === 'POST') {
+      const body = await readJson(request);
+      const result = await changePassword(user.id, body.currentPassword, body.newPassword);
+      response.writeHead(200, {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Set-Cookie': 'sg_session=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0',
+      });
+      return response.end(JSON.stringify(result));
+    }
+    if (pathname === '/api/admins' && request.method === 'GET') {
+      if (user.role !== 'owner') return json(response, 403, { error: 'Только владелец может управлять администраторами' });
+      return json(response, 200, { admins: await listAdmins() });
+    }
+    if (pathname === '/api/admins' && request.method === 'POST') {
+      if (user.role !== 'owner') return json(response, 403, { error: 'Только владелец может управлять администраторами' });
+      return json(response, 201, await createAdmin(await readJson(request)));
+    }
+    const adminActiveMatch = pathname.match(/^\/api\/admins\/(\d+)\/active$/);
+    if (adminActiveMatch && request.method === 'PATCH') {
+      if (user.role !== 'owner') return json(response, 403, { error: 'Только владелец может управлять администраторами' });
+      const body = await readJson(request);
+      return json(response, 200, await setAdminActive(Number(adminActiveMatch[1]), body.active, user));
+    }
     if (pathname === '/api/crm') return json(response, 200, await getCrmData());
     const stageMatch = pathname.match(/^\/api\/candidates\/(\d+)\/stage$/);
     if (stageMatch && request.method === 'PATCH') {
@@ -108,24 +141,15 @@ createServer(async (request, response) => {
       });
     }
     if (dialogueConfigMatch && request.method === 'PUT') {
-      requireAutomationAuth(request);
       const body = await readJson(request);
       return json(response, 200, await saveDialogueConfig(Number(dialogueConfigMatch[1]), body));
     }
     if (pathname === '/api/dialogues/sync' && request.method === 'POST') {
-      requireAutomationAuth(request);
       return json(response, 200, await syncAutomatedDialogues());
     }
     if (pathname === '/api/hh/status') return json(response, 200, { hh: await integrationStatus(), database: await databaseStatus() });
     if (pathname === '/api/hh/connect') {
       response.writeHead(302, { Location: await createAuthorizationUrl(), 'Cache-Control': 'no-store' });
-      return response.end();
-    }
-    if (pathname === '/api/hh/callback') {
-      const url = new URL(request.url || '/', 'http://localhost');
-      if (!url.searchParams.get('code') || !url.searchParams.get('state')) throw new Error(url.searchParams.get('error') || 'OAuth callback is incomplete');
-      await completeAuthorization(url.searchParams.get('code'), url.searchParams.get('state'));
-      response.writeHead(302, { Location: '/?hh=connected' });
       return response.end();
     }
     if (pathname === '/api/hh/sync' && request.method === 'POST') return json(response, 200, await syncIncoming());

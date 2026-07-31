@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { FormEvent, useEffect, useMemo, useState } from 'react';
 import { BriefcaseBusiness, ChevronDown, CircleHelp, Filter, LayoutDashboard, ListChecks, MessageSquareText, MoreHorizontal, Plus, Search, Settings, SlidersHorizontal, Sparkles, Users, X } from 'lucide-react';
 import { candidates as seed, Candidate, Stage, stages, vacancies } from './data';
 
@@ -7,6 +7,7 @@ type VacancyOption={id?:number;name:string;active:boolean;count:number;newCount:
 type Criterion={id?:number;name:string;description:string;weight:number;position:number};
 type AppTab='board'|'candidates'|'vacancies'|'dialogs'|'criteria'|'settings';
 type HhState={connected:boolean;loading:boolean;message?:string};
+type AuthUser={id:number;username:string;displayName:string;role:'owner'|'admin'};
 const tabTitles:Record<AppTab,{title:string;subtitle:string}>={
  board:{title:'Воронка кандидатов',subtitle:'Входящие отклики из hh.ru'},
  candidates:{title:'Кандидаты',subtitle:'Все входящие кандидаты по активным вакансиям'},
@@ -16,25 +17,39 @@ const tabTitles:Record<AppTab,{title:string;subtitle:string}>={
  settings:{title:'Настройки',subtitle:'Подключения и синхронизация CRM'},
 };
 export function App(){
+ const [auth,setAuth]=useState<AuthUser|null|undefined>(undefined);
  const [items,setItems]=useState(seed); const [selected,setSelected]=useState<Candidate|null>(null); const [vacancy,setVacancy]=useState('Все вакансии'); const [tab,setTab]=useState<AppTab>('board'); const [query,setQuery]=useState('');
  const [vacancyOptions,setVacancyOptions]=useState<VacancyOption[]>(vacancies);
  const [hh,setHh]=useState<HhState>({connected:false,loading:true});
- useEffect(()=>{fetch('/api/hh/status').then(r=>r.json()).then(data=>setHh({connected:Boolean(data.hh?.connected),loading:false})).catch(()=>setHh({connected:false,loading:false}))},[]);
+ useEffect(()=>{fetch('/api/auth/status').then(r=>r.json()).then(data=>setAuth(data.authenticated?data.user:null)).catch(()=>setAuth(null))},[]);
+ useEffect(()=>{if(!auth)return;fetch('/api/hh/status').then(r=>r.json()).then(data=>setHh({connected:Boolean(data.hh?.connected),loading:false})).catch(()=>setHh({connected:false,loading:false}))},[auth]);
  const loadCrm=async()=>{try{const r=await fetch('/api/crm');const data=await r.json();if(data.vacancies?.length)setVacancyOptions(data.vacancies.map((v:{id:number;name:string})=>({id:v.id,name:v.name,active:true,count:0,newCount:0})));if(data.candidates?.length)setItems(data.candidates.map((c:any)=>{const parts=String(c.name).trim().split(/\s+/);return {...c,stage:c.stage as Stage,score:c.score??0,updated:'недавно',initials:parts.slice(0,2).map((p:string)=>p[0]).join('').toUpperCase(),color:'#dce7e2',factors:c.factors||[]}}))}catch{}};
- useEffect(()=>{loadCrm()},[]);
+ useEffect(()=>{if(auth)loadCrm()},[auth]);
  const visible=useMemo(()=>items.filter(c=>(vacancy==='Все вакансии'||c.vacancy===vacancy)&&(!query||`${c.name} ${c.role} ${c.vacancy}`.toLowerCase().includes(query.toLowerCase()))),[items,vacancy,query]);
  const move=(id:number,stage:Stage)=>{setItems(x=>x.map(c=>c.id===id?{...c,stage}:c));setSelected(s=>s?.id===id?{...s,stage}:s);fetch(`/api/candidates/${id}/stage`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({stage})}).catch(()=>{})};
  const syncHh=async()=>{setHh(s=>({...s,loading:true,message:undefined}));try{const r=await fetch('/api/hh/sync',{method:'POST'});const data=await r.json();if(!r.ok)throw new Error(data.error);setHh({connected:true,loading:false,message:`${data.candidates} откликов`})}catch(error){setHh(s=>({...s,loading:false,message:error instanceof Error?error.message:'Ошибка'}))}};
+ if(auth===undefined)return <div className="auth-loading">Загрузка SG HR CRM…</div>;
+ if(!auth)return <LoginScreen onLogin={setAuth}/>;
+ const signOut=async()=>{await fetch('/api/auth/logout',{method:'POST'});setAuth(null)};
  return <div className="shell">
-  <aside><div className="brand"><span>SG</span><b>HR CRM</b></div><nav><button className={tab==='board'?'active':''} onClick={()=>setTab('board')}><LayoutDashboard/>Воронка</button><button className={tab==='candidates'?'active':''} onClick={()=>setTab('candidates')}><Users/>Кандидаты</button><button className={tab==='vacancies'?'active':''} onClick={()=>setTab('vacancies')}><BriefcaseBusiness/>Вакансии</button><button className={tab==='dialogs'?'active':''} onClick={()=>setTab('dialogs')}><MessageSquareText/>Диалоги <i>{items.filter(c=>c.stage==='Диалог').length}</i></button><button className={tab==='criteria'?'active':''} onClick={()=>setTab('criteria')}><ListChecks/>Критерии</button></nav><div className="aside-bottom"><button onClick={()=>location.assign('mailto:sg@service.guru')}><CircleHelp/>Поддержка</button><button className={tab==='settings'?'active':''} onClick={()=>setTab('settings')}><Settings/>Настройки</button><div className="profile"><div>СГ</div><span><b>Сергей</b><small>Администратор</small></span><ChevronDown/></div></div></aside>
+  <aside><div className="brand"><span>SG</span><b>HR CRM</b></div><nav><button className={tab==='board'?'active':''} onClick={()=>setTab('board')}><LayoutDashboard/>Воронка</button><button className={tab==='candidates'?'active':''} onClick={()=>setTab('candidates')}><Users/>Кандидаты</button><button className={tab==='vacancies'?'active':''} onClick={()=>setTab('vacancies')}><BriefcaseBusiness/>Вакансии</button><button className={tab==='dialogs'?'active':''} onClick={()=>setTab('dialogs')}><MessageSquareText/>Диалоги <i>{items.filter(c=>c.stage==='Диалог').length}</i></button><button className={tab==='criteria'?'active':''} onClick={()=>setTab('criteria')}><ListChecks/>Критерии</button></nav><div className="aside-bottom"><button onClick={()=>location.assign('mailto:sg@service.guru')}><CircleHelp/>Поддержка</button><button className={tab==='settings'?'active':''} onClick={()=>setTab('settings')}><Settings/>Настройки</button><button className="profile" onClick={signOut} title="Выйти"><div>{auth.displayName.slice(0,2).toUpperCase()}</div><span><b>{auth.displayName}</b><small>{auth.role==='owner'?'Владелец':'Администратор'}</small></span><ChevronDown/></button></div></aside>
   <main><header><div><h1>{tabTitles[tab].title}</h1><p>{tabTitles[tab].subtitle}</p></div><div className="header-actions"><label className="search"><Search/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Поиск кандидата"/></label><button className="primary" onClick={syncHh} disabled={hh.loading}><SlidersHorizontal/>{hh.loading?'Обновление…':'Обновить из HH'}</button></div></header>
   {tab==='board'&&<Board items={items} visible={visible} vacancy={vacancy} vacancies={vacancyOptions} setVacancy={setVacancy} hh={hh} syncHh={syncHh} select={setSelected}/>}
   {tab==='candidates'&&<CandidatesView items={visible} select={setSelected}/>}
   {tab==='vacancies'&&<VacanciesView vacancies={vacancyOptions} items={items} open={name=>{setVacancy(name);setTab('board')}}/>}
   {tab==='dialogs'&&<DialogueSettings vacancies={vacancyOptions.filter(v=>v.id)}/>}
   {tab==='criteria'&&<Criteria vacancies={vacancyOptions.filter(v=>v.id)} candidates={items} onScored={async()=>{await loadCrm();setTab('board')}}/>}
-  {tab==='settings'&&<SettingsView hh={hh} syncHh={syncHh}/>}</main>
+  {tab==='settings'&&<SettingsView hh={hh} syncHh={syncHh} user={auth}/>}</main>
   {selected&&<CandidatePanel candidate={selected} close={()=>setSelected(null)} move={move}/>} </div>
+}
+
+function LoginScreen({onLogin}:{onLogin:(user:AuthUser)=>void}){
+ const [username,setUsername]=useState('');
+ const [password,setPassword]=useState('');
+ const [loading,setLoading]=useState(false);
+ const [error,setError]=useState('');
+ const submit=async(e:FormEvent)=>{e.preventDefault();setLoading(true);setError('');try{const r=await fetch('/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username,password})});const data=await r.json();if(!r.ok)throw new Error(data.error);onLogin(data.user)}catch(e){setError(e instanceof Error?e.message:'Не удалось войти')}finally{setLoading(false)}};
+ return <main className="login-page"><form onSubmit={submit}><div className="login-brand"><span>SG</span><b>HR CRM</b></div><h1>Вход в систему</h1><p>Используйте личную учётную запись администратора.</p><label>Логин<input autoComplete="username" value={username} onChange={e=>setUsername(e.target.value)} required/></label><label>Пароль<input type="password" autoComplete="current-password" value={password} onChange={e=>setPassword(e.target.value)} required/></label>{error&&<div className="login-error">{error}</div>}<button className="primary" disabled={loading}>{loading?'Входим…':'Войти'}</button></form></main>
 }
 
 function Board({items,visible,vacancy,vacancies,setVacancy,hh,syncHh,select}:{items:Candidate[];visible:Candidate[];vacancy:string;vacancies:VacancyOption[];setVacancy:(value:string)=>void;hh:HhState;syncHh:()=>void;select:(candidate:Candidate)=>void}){
@@ -50,8 +65,27 @@ function VacanciesView({vacancies,items,open}:{vacancies:VacancyOption[];items:C
  return <section className="vacancy-list">{vacancies.map(v=>{const related=items.filter(c=>c.vacancy===v.name);return <button key={v.name} onClick={()=>open(v.name)}><span><b>{v.name}</b><small>Активная вакансия hh.ru</small></span><strong>{related.length}</strong><small>кандидатов</small><ChevronDown/></button>})}</section>
 }
 
-function SettingsView({hh,syncHh}:{hh:HhState;syncHh:()=>void}){
- return <section className="settings-view"><div><span className={hh.connected?'status-dot connected-dot':'status-dot'}></span><span><b>Интеграция hh.ru</b><small>{hh.connected?'Подключена и готова к синхронизации':'Требуется подключение аккаунта работодателя'}</small></span>{hh.connected?<button className="primary" onClick={syncHh} disabled={hh.loading}>{hh.loading?'Обновление…':'Синхронизировать'}</button>:<button className="primary" onClick={()=>location.assign('/api/hh/connect')}>Подключить</button>}</div><div><span className="status-dot connected-dot"></span><span><b>OpenAI</b><small>Ключ хранится в Railway и используется только сервером</small></span></div></section>
+function SettingsView({hh,syncHh,user}:{hh:HhState;syncHh:()=>void;user:AuthUser}){
+ return <div className="settings-stack"><section className="settings-view"><div><span className={hh.connected?'status-dot connected-dot':'status-dot'}></span><span><b>Интеграция hh.ru</b><small>{hh.connected?'Подключена и готова к синхронизации':'Требуется подключение аккаунта работодателя'}</small></span>{hh.connected?<button className="primary" onClick={syncHh} disabled={hh.loading}>{hh.loading?'Обновление…':'Синхронизировать'}</button>:<button className="primary" onClick={()=>location.assign('/api/hh/connect')}>Подключить</button>}</div><div><span className="status-dot connected-dot"></span><span><b>OpenAI</b><small>Ключ хранится в Railway и используется только сервером</small></span></div></section><ChangePassword/>{user.role==='owner'&&<AdminManager currentUser={user}/>}</div>
+}
+
+function ChangePassword(){
+ const [form,setForm]=useState({currentPassword:'',newPassword:''});
+ const [message,setMessage]=useState('');
+ const submit=async(e:FormEvent)=>{e.preventDefault();setMessage('');try{const r=await fetch('/api/auth/password',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(form)});const data=await r.json();if(!r.ok)throw new Error(data.error);location.reload()}catch(e){setMessage(e instanceof Error?e.message:'Не удалось изменить пароль')}};
+ return <section className="admin-manager"><form className="password-form" onSubmit={submit}><div><h2>Сменить пароль</h2><p>После изменения потребуется войти заново.</p></div><label>Текущий пароль<input type="password" value={form.currentPassword} onChange={e=>setForm({...form,currentPassword:e.target.value})} required/></label><label>Новый пароль<input type="password" minLength={10} value={form.newPassword} onChange={e=>setForm({...form,newPassword:e.target.value})} required/></label><button className="primary">Изменить</button></form>{message&&<p className="criteria-message">{message}</p>}</section>
+}
+
+function AdminManager({currentUser}:{currentUser:AuthUser}){
+ const [admins,setAdmins]=useState<Array<AuthUser&{active:boolean}>>([]);
+ const [form,setForm]=useState({displayName:'',username:'',password:''});
+ const [message,setMessage]=useState('');
+ const [loading,setLoading]=useState(false);
+ const load=async()=>{const r=await fetch('/api/admins');const data=await r.json();if(!r.ok)throw new Error(data.error);setAdmins(data.admins)};
+ useEffect(()=>{load().catch(e=>setMessage(e.message))},[]);
+ const create=async(e:FormEvent)=>{e.preventDefault();setLoading(true);setMessage('');try{const r=await fetch('/api/admins',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(form)});const data=await r.json();if(!r.ok)throw new Error(data.error);setForm({displayName:'',username:'',password:''});await load();setMessage('Администратор создан')}catch(e){setMessage(e instanceof Error?e.message:'Не удалось создать администратора')}finally{setLoading(false)}};
+ const toggle=async(admin:AuthUser&{active:boolean})=>{setLoading(true);setMessage('');try{const r=await fetch(`/api/admins/${admin.id}/active`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({active:!admin.active})});const data=await r.json();if(!r.ok)throw new Error(data.error);await load()}catch(e){setMessage(e instanceof Error?e.message:'Не удалось изменить доступ')}finally{setLoading(false)}};
+ return <section className="admin-manager"><div className="section-head"><div><h2>Администраторы</h2><p>У каждого сотрудника собственный логин и пароль.</p></div></div><div className="admin-list">{admins.map(admin=><div key={admin.id}><span><b>{admin.displayName}</b><small>{admin.username} · {admin.role==='owner'?'владелец':'администратор'}</small></span><em className={admin.active?'active-user':'inactive-user'}>{admin.active?'Активен':'Отключён'}</em>{admin.role!=='owner'&&admin.id!==currentUser.id&&<button className="ghost-action" disabled={loading} onClick={()=>toggle(admin)}>{admin.active?'Отключить':'Включить'}</button>}</div>)}</div><form className="admin-form" onSubmit={create}><h3>Добавить администратора</h3><label>Имя<input value={form.displayName} onChange={e=>setForm({...form,displayName:e.target.value})} required maxLength={100}/></label><label>Логин<input value={form.username} onChange={e=>setForm({...form,username:e.target.value})} required minLength={3} maxLength={80}/></label><label>Временный пароль<input type="password" value={form.password} onChange={e=>setForm({...form,password:e.target.value})} required minLength={10}/></label><button className="primary" disabled={loading}>{loading?'Сохранение…':'Создать администратора'}</button></form>{message&&<p className="criteria-message">{message}</p>}</section>
 }
 
 function DialogueSettings({vacancies}:{vacancies:VacancyOption[]}){

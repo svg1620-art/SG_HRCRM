@@ -67,6 +67,21 @@ export async function migrate() {
       last_sent_at TIMESTAMPTZ,
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
+    CREATE TABLE IF NOT EXISTS admin_users (
+      id BIGSERIAL PRIMARY KEY,
+      username TEXT UNIQUE NOT NULL,
+      display_name TEXT NOT NULL,
+      password_hash TEXT NOT NULL,
+      role TEXT NOT NULL DEFAULT 'admin',
+      active BOOLEAN NOT NULL DEFAULT TRUE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS admin_sessions (
+      token_hash TEXT PRIMARY KEY,
+      user_id BIGINT NOT NULL REFERENCES admin_users(id) ON DELETE CASCADE,
+      expires_at TIMESTAMPTZ NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
     CREATE INDEX IF NOT EXISTS candidates_vacancy_idx ON candidates(hh_vacancy_id);
     ALTER TABLE candidates ADD COLUMN IF NOT EXISTS score_details JSONB NOT NULL DEFAULT '[]';
     ALTER TABLE candidates ADD COLUMN IF NOT EXISTS scored_at TIMESTAMPTZ;

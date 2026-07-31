@@ -5,4 +5,5 @@ import './styles.css';
 import './integration.css';
 import './criteria.css';
 import './views.css';
+import './auth.css';
 ReactDOM.createRoot(document.getElementById('root')!).render(<React.StrictMode><App /></React.StrictMode>);
